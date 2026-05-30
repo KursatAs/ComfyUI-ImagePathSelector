@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-ImagePathSelector"
 description = "This node loads all images from the selected folder and displays them in a grid. \nThe user can click any image to automatically execute the ComfyUI workflow. \nAdditionally, it supports many RAW image formats as well as HEIC formats."
-version = "1.0.0"
+version = "1.0.1"
 license = {file = "LICENSE"}
 # classifiers = [
 #     # For OS-independent nodes (works on all operating systems)

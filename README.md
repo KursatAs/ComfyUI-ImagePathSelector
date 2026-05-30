@@ -105,5 +105,5 @@ See [LICENSE](LICENSE).
 
 - 🐛 [Bug Tracker](https://github.com/KursatAs/ComfyUI-ImagePathSelector/issues)
 - 📖 [Documentation / Wiki](https://github.com/KursatAs/ComfyUI-ImagePathSelector/wiki)
-- 📦 [Comfy Registry](https://registry.comfy.org)
+- 📦 [Comfy Registry](https://registry.comfy.org/nodes/ComfyUI-ImagePathSelector)
 
