@@ -10,9 +10,10 @@ A custom ComfyUI node that lets you visually browse a folder of images and selec
 - 🖱️ **Click to select** — click any thumbnail to instantly queue and run the workflow with that image
 - 📁 **Browse Folder button** *(Windows only)* — opens a native folder picker dialog
 - ✅ **Green border highlight** on the currently selected image
-- 🔄 **Refresh toggle** — force-reload the image list from disk
+- 🔄 **Refresh toggle** — force-reload the image list from disk (only processes new/removed files, not the whole folder)
 - 🗂️ **Right-click → Reload Images** context menu option
 - 💾 **Selection persists** across workflow saves and reloads
+- ⚡ **SQLite thumbnail cache** — thumbnails are stored in a `.ImagePathSelector.db` file inside the image folder, making subsequent loads near-instant
 
 ---
 
@@ -78,9 +79,12 @@ pip install pillow-heif
 ## Tips
 
 - On **Windows**, use the **📁 Browse Folder...** button to open a native folder picker instead of typing the path manually.
-- Use **right-click → Reload Images** or toggle the **Refresh** checkbox to pick up newly added files without restarting ComfyUI.
-- The thumbnail cache is automatically invalidated when the directory path changes or refresh is triggered.
-- The Image Path Selector node creates thumbnails while loading images, so the loading time may vary depending on the number, size, and type of images in the selected folder. 
+- Use **right-click → Reload Images** or toggle the **Refresh** checkbox to pick up newly added files without restarting ComfyUI. On refresh, only new/removed files are processed — existing cached thumbnails are reused.
+- The thumbnail cache is automatically invalidated when the directory path changes or the thumbnail size changes.
+- The first load of a folder generates thumbnails and saves them to `.ImagePathSelector.db` inside that folder. Subsequent loads read directly from the cache and are much faster.
+- On **Windows**, `.ImagePathSelector.db` is automatically hidden so it doesn't clutter your folder.
+- If the database file becomes corrupt it is automatically deleted and rebuilt from scratch.
+- If ComfyUI does not have write permission to the image folder, thumbnail caching is silently skipped and thumbnails are generated in memory as before.
 - RAW image formats load more slowly because they usually have larger file sizes. It is not recommended to load a folder containing more than approximately 50–100 images.
 
 
@@ -98,6 +102,22 @@ pip install pillow-heif
 ## License
 
 See [LICENSE](LICENSE).
+
+---
+
+## Changelog - 1.0.2
+
+### 2026-06-01
+- **SQLite thumbnail cache** — thumbnails are now persisted to a `.ImagePathSelector.db` file inside the image folder (hidden on Windows). Subsequent loads read from the database instead of re-generating thumbnails, making folder loads near-instant.
+- **Smart refresh** — toggling *Refresh* now only processes files that are new or have been removed; existing cached thumbnails are reused, making refresh much faster for large folders.
+- **Auto-recovery** — a corrupt database file is automatically detected, deleted, and rebuilt from scratch.
+- **Graceful fallback** — if the image folder is read-only, caching is silently skipped and thumbnails are generated in memory as before.
+
+### 1.0.1
+- Bumped version, updated Comfy Registry link.
+
+### 1.0.0
+- Initial release.
 
 ---
 

@@ -207,6 +207,21 @@ app.registerExtension({
                         console.log("[ImagePathSelector] ✗ No valid UI payload");
                         await self.applyPayloadToGrid(null, "onExecuted:none");
                     }
+
+                    // Clear selected_image widget if backend signalled a folder change
+                    const rawUi = message?.ui ?? message?.output?.ui ?? message;
+                    const shouldReset = Array.isArray(rawUi?.reset_selection)
+                        ? rawUi.reset_selection[0]
+                        : rawUi?.reset_selection;
+                    if (shouldReset) {
+                        const hiddenWidget = self.widgets?.find(w => w.name === "selected_image");
+                        if (hiddenWidget) {
+                            hiddenWidget.value = "";
+                            console.log("[ImagePathSelector] 📂 Folder changed — selected_image widget cleared");
+                        }
+                        self.selectedImagePath = "";
+                        self.selectedIndex = -1;
+                    }
                     console.log("[ImagePathSelector] ===== onExecuted END =====");
                 };
 

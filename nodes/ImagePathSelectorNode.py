@@ -502,10 +502,14 @@ class ImagePathSelectorNode:
             return {"ui": empty_ui, "result": (placeholder,)}
 
         dir_hash = hashlib.md5(directory_path.encode()).hexdigest()
-        if self.directory_hash != dir_hash or refresh:
+        dir_changed = self.directory_hash != dir_hash
+        if dir_changed or refresh:
             print(f"[ImagePathSelector] Clearing in-memory cache (dir changed or refresh)")
             self.image_cache.clear()
             self.directory_hash = dir_hash
+            if dir_changed:
+                print(f"[ImagePathSelector] 📂 Folder changed — resetting image selection")
+                selected_image = ""
 
         self.image_list = self._load_images_from_directory(directory_path, thumbnail_size, refresh=refresh)
         print(f"[ImagePathSelector] ✓ Loaded {len(self.image_list)} images from directory")
@@ -573,7 +577,8 @@ class ImagePathSelectorNode:
                 "thumbnail_size": [64],
                 "columns": [8],
                 "text": [""],
-                "awaiting_selection": [True]
+                "awaiting_selection": [True],
+                "reset_selection": [dir_changed]
             }
             self._set_awaiting_state(node_id, True)
 
