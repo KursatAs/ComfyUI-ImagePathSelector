@@ -1,5 +1,8 @@
 import os
+import sys
 import hashlib
+import sqlite3
+import io as _io
 try:
     import folder_paths as _folder_paths
 except ImportError:
@@ -99,7 +102,190 @@ class ImagePathSelectorNode:
             print(f"[ImagePathSelector] ✗ Thumbnail failed for '{os.path.basename(image_path)}': {e}")
             return None
 
-    def _load_images_from_directory(self, directory_path, thumbnail_size):
+    _DB_FILENAME = ".ImagePathSelector.db"
+
+    def _get_db_path(self, directory_path):
+        return os.path.join(directory_path, self._DB_FILENAME)
+
+    def _set_hidden(self, filepath):
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                FILE_ATTRIBUTE_HIDDEN = 0x2
+                ctypes.windll.kernel32.SetFileAttributesW(filepath, FILE_ATTRIBUTE_HIDDEN)
+            except Exception as e:
+                print(f"[ImagePathSelector] ⚠ Could not set hidden attribute on '{filepath}': {e}")
+
+    def _open_db(self, db_path):
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        cur = conn.cursor()
+        cur.executescript("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            );
+            CREATE TABLE IF NOT EXISTS thumbnails (
+                hash       TEXT PRIMARY KEY,
+                path       TEXT NOT NULL,
+                thumbnail  BLOB NOT NULL,
+                thumb_size INTEGER NOT NULL,
+                sort_name  TEXT NOT NULL
+            );
+        """)
+        conn.commit()
+        return conn, cur
+
+    def _read_meta(self, cur, key, default=None):
+        row = cur.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def _write_meta(self, cur, key, value):
+        cur.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, str(value)))
+
+    def _pil_to_blob(self, img):
+        buf = _io.BytesIO()
+        img.save(buf, format='JPEG', quality=85)
+        return buf.getvalue()
+
+    def _blob_to_pil(self, blob):
+        return Image.open(_io.BytesIO(blob)).convert('RGB')
+
+    def _write_thumb_to_db(self, cur, file_hash, filepath, thumb_pil, thumb_size):
+        sort_name = os.path.basename(filepath).lower()
+        blob = self._pil_to_blob(thumb_pil)
+        cur.execute(
+            "INSERT OR REPLACE INTO thumbnails (hash, path, thumbnail, thumb_size, sort_name) "
+            "VALUES (?,?,?,?,?)",
+            (file_hash, filepath, blob, thumb_size, sort_name)
+        )
+
+    def _load_from_db(self, db_path, thumb_size):
+
+        try:
+            conn, cur = self._open_db(db_path)
+            with conn:
+                stored_size = self._read_meta(cur, 'thumb_size')
+                if stored_size is None or int(stored_size) != thumb_size:
+                    print(f"[ImagePathSelector] ℹ Thumbnail size changed ({stored_size} → {thumb_size}), rebuilding .ImagePathSelector.db")
+                    conn.close()
+                    return None
+
+                rows = cur.execute(
+                    "SELECT hash, path, thumbnail FROM thumbnails ORDER BY sort_name"
+                ).fetchall()
+            conn.close()
+
+            image_list = []
+            for file_hash, filepath, blob in rows:
+                if not os.path.isfile(filepath):
+                    continue  # stale entry; will be cleaned on next refresh
+                try:
+                    thumb = self._blob_to_pil(blob)
+                    self.image_cache[file_hash] = {'path': filepath, 'thumb': thumb}
+                    image_list.append(file_hash)
+                except Exception as e:
+                    print(f"[ImagePathSelector] ⚠ Could not decode thumbnail for '{os.path.basename(filepath)}': {e}")
+            return image_list
+        except sqlite3.DatabaseError as e:
+            print(f"[ImagePathSelector] ⚠ .ImagePathSelector.db is corrupt — rebuilding from scratch. ({e})")
+            try:
+                os.remove(db_path)
+            except Exception:
+                pass
+            return None
+        except PermissionError as e:
+            print(f"[ImagePathSelector] ⚠ Cannot read .ImagePathSelector.db: Permission denied.")
+            print(f"[ImagePathSelector]   → Thumbnails will not be cached. To enable caching, grant read access to that folder.")
+            return None
+        except Exception as e:
+            print(f"[ImagePathSelector] ⚠ Unexpected error reading .ImagePathSelector.db: {e}")
+            return None
+
+    def _sync_db(self, db_path, directory_path, valid_extensions, thumb_size):
+
+        try:
+            conn, cur = self._open_db(db_path)
+
+            stored_size = self._read_meta(cur, 'thumb_size')
+            if stored_size is None or int(stored_size) != thumb_size:
+                print(f"[ImagePathSelector] ℹ Thumbnail size changed — clearing .ImagePathSelector.db")
+                cur.execute("DELETE FROM thumbnails")
+                cur.execute("DELETE FROM meta")
+                conn.commit()
+
+            rows = cur.execute("SELECT hash, path FROM thumbnails").fetchall()
+            db_hashes = {row[0]: row[1] for row in rows}
+
+            fs_files = {}
+            for filename in os.listdir(directory_path):
+                if filename == self._DB_FILENAME:
+                    continue
+                ext = os.path.splitext(filename.lower())[1]
+                if ext not in valid_extensions:
+                    continue
+                filepath = os.path.join(directory_path, filename)
+                if not os.path.isfile(filepath):
+                    continue
+                file_hash = self._get_file_hash(filepath)
+                fs_files[file_hash] = filepath
+
+            stale = set(db_hashes.keys()) - set(fs_files.keys())
+            if stale:
+                cur.executemany("DELETE FROM thumbnails WHERE hash=?", [(h,) for h in stale])
+                print(f"[ImagePathSelector] 🗑 Removed {len(stale)} stale entries from .ImagePathSelector.db")
+
+            new_hashes = set(fs_files.keys()) - set(db_hashes.keys())
+            added = 0
+            for file_hash in new_hashes:
+                filepath = fs_files[file_hash]
+                thumb = self._create_thumbnail(filepath, thumb_size)
+                if thumb:
+                    self._write_thumb_to_db(cur, file_hash, filepath, thumb, thumb_size)
+                    self.image_cache[file_hash] = {'path': filepath, 'thumb': thumb}
+                    added += 1
+            if added:
+                print(f"[ImagePathSelector] ✚ Added {added} new thumbnail(s) to .ImagePathSelector.db")
+
+            self._write_meta(cur, 'thumb_size', thumb_size)
+            conn.commit()
+
+            rows = cur.execute(
+                "SELECT hash, path, thumbnail FROM thumbnails ORDER BY sort_name"
+            ).fetchall()
+            conn.close()
+
+            image_list = []
+            for file_hash, filepath, blob in rows:
+                if file_hash not in self.image_cache:
+                    try:
+                        thumb = self._blob_to_pil(blob)
+                        self.image_cache[file_hash] = {'path': filepath, 'thumb': thumb}
+                    except Exception as e:
+                        print(f"[ImagePathSelector] ⚠ Could not decode thumbnail for '{os.path.basename(filepath)}': {e}")
+                        continue
+                image_list.append(file_hash)
+            return image_list
+
+        except PermissionError:
+            print(f"[ImagePathSelector] ⚠ Cannot write .ImagePathSelector.db in '{directory_path}': Permission denied.")
+            print(f"[ImagePathSelector]   → Thumbnails will not be cached. To enable caching, grant write access to that folder.")
+            return None
+        except sqlite3.DatabaseError as e:
+            print(f"[ImagePathSelector] ⚠ .ImagePathSelector.db is corrupt — rebuilding from scratch. ({e})")
+            try:
+                os.remove(db_path)
+            except Exception:
+                pass
+            return None
+        except Exception as e:
+            print(f"[ImagePathSelector] ⚠ Unexpected error syncing .ImagePathSelector.db: {e}")
+            return None
+
+    def _load_images_from_directory(self, directory_path, thumbnail_size, refresh=False):
         if not os.path.exists(directory_path):
             return []
 
@@ -108,8 +294,25 @@ class ImagePathSelectorNode:
             valid_extensions |= {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.raw', '.pef', '.srw'}
         if _HEIF_AVAILABLE:
             valid_extensions |= {'.hif', '.heic', '.heif'}
-        image_list = []
 
+        db_path = self._get_db_path(directory_path)
+
+        if not refresh and os.path.isfile(db_path):
+            print(f"[ImagePathSelector] 📦 Loading thumbnails from .ImagePathSelector.db ...")
+            cached = self._load_from_db(db_path, thumbnail_size)
+            if cached is not None:
+                print(f"[ImagePathSelector] ✓ Loaded {len(cached)} thumbnails from cache")
+                return cached
+            # DB was unusable — fall through to full regeneration
+
+        if refresh and os.path.isfile(db_path):
+            print(f"[ImagePathSelector] 🔄 Refreshing .ImagePathSelector.db ...")
+            synced = self._sync_db(db_path, directory_path, valid_extensions, thumbnail_size)
+            if synced is not None:
+                print(f"[ImagePathSelector] ✓ Sync complete — {len(synced)} images in cache")
+                return synced
+
+        image_list = []
         all_files = os.listdir(directory_path)
         print(f"[ImagePathSelector] Scanning {len(all_files)} entries in directory...")
 
@@ -117,11 +320,27 @@ class ImagePathSelectorNode:
         print(f"[ImagePathSelector] Extensions found in directory: {sorted(found_exts)}")
         print(f"[ImagePathSelector] Valid extensions: {sorted(valid_extensions)}")
 
-        for filename in all_files:
+        db_conn = None
+        db_cur = None
+        db_available = False
+        try:
+            db_conn, db_cur = self._open_db(db_path)
+            db_cur.execute("DELETE FROM thumbnails")  # fresh build
+            db_cur.execute("DELETE FROM meta")
+            db_available = True
+            self._set_hidden(db_path)
+        except PermissionError:
+            print(f"[ImagePathSelector] ⚠ Cannot write .ImagePathSelector.db in '{directory_path}': Permission denied.")
+            print(f"[ImagePathSelector]   → Thumbnails will not be cached. To enable caching, grant write access to that folder.")
+        except Exception as e:
+            print(f"[ImagePathSelector] ⚠ Unexpected error creating .ImagePathSelector.db: {e}")
+
+        for filename in sorted(all_files):
+            if filename == self._DB_FILENAME:
+                continue
             ext = os.path.splitext(filename.lower())[1]
             if ext not in valid_extensions:
                 continue
-
             filepath = os.path.join(directory_path, filename)
             if not os.path.isfile(filepath):
                 continue
@@ -131,16 +350,24 @@ class ImagePathSelectorNode:
             if file_hash not in self.image_cache:
                 thumb = self._create_thumbnail(filepath, thumbnail_size)
                 if thumb:
-                    self.image_cache[file_hash] = {
-                        'path': filepath,
-                        'thumb': thumb
-                    }
+                    self.image_cache[file_hash] = {'path': filepath, 'thumb': thumb}
+                    if db_available:
+                        self._write_thumb_to_db(db_cur, file_hash, filepath, thumb, thumbnail_size)
                 else:
                     print(f"[ImagePathSelector]   ↳ Skipped (thumbnail creation failed): {filename}")
                     continue
 
             if file_hash in self.image_cache:
                 image_list.append(file_hash)
+
+        if db_available and db_conn:
+            try:
+                self._write_meta(db_cur, 'thumb_size', thumbnail_size)
+                db_conn.commit()
+                db_conn.close()
+                print(f"[ImagePathSelector] 💾 Saved {len(image_list)} thumbnails to .ImagePathSelector.db")
+            except Exception as e:
+                print(f"[ImagePathSelector] ⚠ Could not finalise .ImagePathSelector.db: {e}")
 
         return image_list
 
@@ -276,11 +503,11 @@ class ImagePathSelectorNode:
 
         dir_hash = hashlib.md5(directory_path.encode()).hexdigest()
         if self.directory_hash != dir_hash or refresh:
-            print(f"[ImagePathSelector] Clearing cache (dir changed or refresh)")
+            print(f"[ImagePathSelector] Clearing in-memory cache (dir changed or refresh)")
             self.image_cache.clear()
             self.directory_hash = dir_hash
 
-        self.image_list = self._load_images_from_directory(directory_path, thumbnail_size)
+        self.image_list = self._load_images_from_directory(directory_path, thumbnail_size, refresh=refresh)
         print(f"[ImagePathSelector] ✓ Loaded {len(self.image_list)} images from directory")
 
         if not self.image_list:
