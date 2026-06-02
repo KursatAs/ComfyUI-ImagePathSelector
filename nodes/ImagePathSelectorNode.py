@@ -7,7 +7,7 @@ try:
     import folder_paths as _folder_paths
 except ImportError:
     _folder_paths = None
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import torch
 import numpy as np
 
@@ -86,7 +86,7 @@ class ImagePathSelectorNode:
             with rawpy.imread(image_path) as raw:
                 rgb = raw.postprocess()
             return Image.fromarray(rgb)
-        return Image.open(image_path)
+        return ImageOps.exif_transpose(Image.open(image_path))
 
     def _create_thumbnail(self, image_path, size):
         try:
