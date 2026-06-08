@@ -31,11 +31,12 @@ from comfy_execution.graph import ExecutionBlocker
 
 class ImagePathSelectorNode:
     _selection_storage = {}
+    _directory_hashes = {}  # class-level: keyed by node_id, survives instance recreation
 
     def __init__(self):
         self.image_cache = {}
         self.image_list = []
-        self.directory_hash = None
+        # NOTE: directory_hash is now _directory_hashes (class-level), not an instance var
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -490,7 +491,7 @@ class ImagePathSelectorNode:
         columns = 8
 
         if not directory_path or not os.path.exists(directory_path):
-            print(f"[ImagePathSelector] ✗ ERROR: Directory does not exist or is empty!")
+            print(f"[ImagePathSelector] ⚠️ ERROR: Directory does not exist or is empty!")
             placeholder = torch.zeros((1, 512, 512, 3))
             empty_ui = {
                 "images": [[]],
@@ -501,29 +502,44 @@ class ImagePathSelectorNode:
             }
             return {"ui": empty_ui, "result": (placeholder,)}
 
+        # Compute node_id early so we can use it for all per-node storage
+        node_id = str(unique_id[0]) if isinstance(unique_id, list) else str(unique_id) if unique_id else "default"
+
         dir_hash = hashlib.md5(directory_path.encode()).hexdigest()
-        dir_changed = self.directory_hash != dir_hash
-        if dir_changed or refresh:
-            print(f"[ImagePathSelector] Clearing in-memory cache (dir changed or refresh)")
+        stored_dir_hash = self._directory_hashes.get(node_id)
+        first_run = stored_dir_hash is None
+        dir_changed = (not first_run) and (stored_dir_hash != dir_hash)
+
+        if dir_changed or refresh or first_run:
+            print(f"[ImagePathSelector] Clearing in-memory cache (dir_changed={dir_changed}, refresh={refresh}, first_run={first_run})")
             self.image_cache.clear()
-            self.directory_hash = dir_hash
+            self._directory_hashes[node_id] = dir_hash
             if dir_changed:
-                print(f"[ImagePathSelector] 📂 Folder changed — resetting image selection")
+                print(f"[ImagePathSelector] 📂 Folder changed – resetting image selection")
                 selected_image = ""
 
+        # Fallback: restore selection from persistent storage if the widget was cleared
+        if not selected_image:
+            storage = self._selection_storage.get(node_id, {})
+            last_path = storage.get("last_path", "")
+            last_dir = storage.get("last_dir", "")
+            if last_path and last_dir == directory_path and os.path.isfile(last_path):
+                selected_image = last_path
+                print(f"[ImagePathSelector] 🔄 Restored selection from storage: {os.path.basename(last_path)}")
+
         self.image_list = self._load_images_from_directory(directory_path, thumbnail_size, refresh=refresh)
-        print(f"[ImagePathSelector] ✓ Loaded {len(self.image_list)} images from directory")
+        print(f"[ImagePathSelector] ✅ Loaded {len(self.image_list)} images from directory")
 
         if not self.image_list:
-            print(f"[ImagePathSelector] ✗ No valid images found in directory!")
+            print(f"[ImagePathSelector] ⚠️ No valid images found in directory!")
             placeholder = torch.zeros((1, 512, 512, 3))
             return {"ui": {"images": [[]], "selected_index": [0], "thumbnail_size": [64], "columns": [8], "text": [""]}, "result": (placeholder,)}
 
-        node_id = str(unique_id[0]) if isinstance(unique_id, list) else str(unique_id) if unique_id else "default"
+        # node_id already computed above
 
         print(f"[ImagePathSelector] Preparing UI data with base64 thumbnails...")
         image_list = self._get_image_list_for_ui()
-        print(f"[ImagePathSelector] ✓ Created {len(image_list)} thumbnail entries")
+        print(f"[ImagePathSelector] ✅ Created {len(image_list)} thumbnail entries")
 
         if len(image_list) > 0:
             first_thumb_len = len(image_list[0].get('thumbnail', ''))
@@ -536,13 +552,14 @@ class ImagePathSelectorNode:
                     selected_index = idx
                     break
 
-            print(f"[ImagePathSelector] ✓ User selected image at index {selected_index}")
+            print(f"[ImagePathSelector] ✅ User selected image at index {selected_index}")
             print(f"[ImagePathSelector] Selected path: {selected_image}")
 
             if node_id not in self._selection_storage:
                 self._selection_storage[node_id] = {}
             self._selection_storage[node_id]["last_path"] = selected_image
             self._selection_storage[node_id]["last_index"] = selected_index
+            self._selection_storage[node_id]["last_dir"] = directory_path  # persist dir for fallback
             self._set_awaiting_state(node_id, False)
 
             ui_data = {
@@ -557,7 +574,7 @@ class ImagePathSelectorNode:
             print(f"[ImagePathSelector] Loading selected image as tensor...")
             image_tensor = self._load_image_as_tensor(selected_image)
             print(f"[ImagePathSelector] Image tensor shape: {image_tensor.shape}")
-            print(f"[ImagePathSelector] ✓ Returning result with selected image")
+            print(f"[ImagePathSelector] ✅ Returning result with selected image")
             print(f"[ImagePathSelector] ========== COMPLETE ==========")
             print(f"{'='*60}\n")
 
@@ -566,7 +583,7 @@ class ImagePathSelectorNode:
                 "result": (image_tensor,)
             }
         else:
-            print(f"[ImagePathSelector] ⏸️  PAUSED - No selection made yet")
+            print(f"[ImagePathSelector]   PAUSED - No selection made yet")
             print(f"[ImagePathSelector] Displaying grid with {len(image_list)} thumbnails")
             print(f"[ImagePathSelector] Waiting for user to click a thumbnail...")
             print(f"[ImagePathSelector] Node ID: {node_id}")
@@ -578,7 +595,7 @@ class ImagePathSelectorNode:
                 "columns": [8],
                 "text": [""],
                 "awaiting_selection": [True],
-                "reset_selection": [dir_changed]
+                "reset_selection": [dir_changed]  # only True on actual folder change, NOT on first_run
             }
             self._set_awaiting_state(node_id, True)
 

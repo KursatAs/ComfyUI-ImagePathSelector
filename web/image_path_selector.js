@@ -127,11 +127,9 @@ app.registerExtension({
 
                 this.applyPayloadToGrid = async function(payload, sourceLabel = "payload") {
                     if (!payload) {
-                        console.log(`[ImagePathSelector] ✗ No payload (${sourceLabel})`);
-                        self.imageListData = [];
-                        self.selectedIndex = -1;
-                        self.lastImageCount = 0;
-                        self._clearGrid();
+                        // No payload means cached execution or no UI data.
+                        // Preserve existing grid and selection so the green mark stays visible.
+                        console.log(`[ImagePathSelector] No payload (${sourceLabel}) — preserving existing state`);
                         return;
                     }
 
@@ -141,7 +139,7 @@ app.registerExtension({
                     self.thumbnailSize  = payload.thumbnailSize ?? self.thumbnailSize;
                     self.columns        = payload.columns        ?? self.columns;
 
-                    console.log(`[ImagePathSelector] ✓ ${self.imageListData.length} images, sel=${self.selectedIndex}`);
+                    console.log(`[ImagePathSelector] ✅ ${self.imageListData.length} images, sel=${self.selectedIndex}`);
 
                     if (!self.imageListData.length) {
                         self.selectedIndex  = -1;
@@ -150,9 +148,20 @@ app.registerExtension({
                         return;
                     }
 
+                    // Re-sync hidden widget value from a confirmed selection (safety net for cleared widgets)
+                    if (self.selectedIndex >= 0 && self.imageListData[self.selectedIndex]) {
+                        const confirmedPath = self.imageListData[self.selectedIndex].path;
+                        const hiddenWidget = self.widgets?.find(w => w.name === "selected_image");
+                        if (hiddenWidget && confirmedPath && hiddenWidget.value !== confirmedPath) {
+                            hiddenWidget.value = confirmedPath;
+                            self.selectedImagePath = confirmedPath;
+                            console.log(`[ImagePathSelector] 🔄 Re-synced widget value from payload: ${confirmedPath}`);
+                        }
+                    }
+
                     await self.buildThumbnailGrid();
                     self.lastImageCount = self.imageListData.length;
-                    console.log("[ImagePathSelector] ✓ Grid built");
+                    console.log("[ImagePathSelector] ✅ Grid built");
                 };
 
                 this._clearGrid = function() {
