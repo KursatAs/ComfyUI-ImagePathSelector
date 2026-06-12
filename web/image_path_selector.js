@@ -415,6 +415,20 @@ app.registerExtension({
                     console.log("[ImagePathSelector] Grid built successfully");
                 };
 
+                const originalOnRemoved = this.onRemoved;
+                this.onRemoved = function() {
+                    if (originalOnRemoved) originalOnRemoved.apply(this, arguments);
+                    // Clean up the floating hover preview element from document.body
+                    // so it doesn't stay orphaned/visible when switching graph modes
+                    // (Classic → NODES2 → Classic) or when the node is deleted.
+                    self._hideHoverPreview();
+                    if (self._hoverPreviewEl) {
+                        self._hoverPreviewEl.remove();
+                        self._hoverPreviewEl = null;
+                        self._hoverPreviewImg = null;
+                    }
+                };
+
                 const originalSerialize = this.serialize;
                 this.serialize = function() {
                     const data = originalSerialize ? originalSerialize.apply(this, arguments) : {};
