@@ -427,9 +427,25 @@ class ImagePathSelectorNode:
         grid_np = np.array(grid).astype(np.float32) / 255.0
         return torch.from_numpy(grid_np)[None,]
 
-    def _get_image_list_for_ui(self):
+    def _image_to_data_url(self, img, quality=85):
         import base64
         import io
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=quality)
+        buffer.seek(0)
+        img_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        return f"data:image/jpeg;base64,{img_base64}"
+
+    def _make_grid_thumbnail(self, preview_img, size):
+        img = preview_img.copy()
+        img.thumbnail((size, size), Image.Resampling.LANCZOS)
+        thumb_canvas = Image.new('RGB', (size, size), (32, 32, 32))
+        x_offset = (size - img.width) // 2
+        y_offset = (size - img.height) // 2
+        thumb_canvas.paste(img, (x_offset, y_offset))
+        return thumb_canvas
+
+    def _get_image_list_for_ui(self, grid_thumbnail_size=64):
         result = []
         for img_hash in self.image_list:
             cache_entry = self.image_cache.get(img_hash)
@@ -437,18 +453,15 @@ class ImagePathSelectorNode:
                 filepath = cache_entry['path']
                 filename = os.path.basename(filepath)
                 directory = os.path.dirname(filepath)
-                thumb = cache_entry['thumb']
-                buffer = io.BytesIO()
-                thumb.save(buffer, format='JPEG', quality=85)
-                buffer.seek(0)
-                thumb_base64 = base64.b64encode(buffer.read()).decode('utf-8')
-                thumb_b64_str = f"data:image/jpeg;base64,{thumb_base64}"
+                preview = cache_entry['thumb']
+                grid_thumb = self._make_grid_thumbnail(preview, grid_thumbnail_size)
                 result.append({
                     'path': filepath,
                     'filename': filename,
                     'directory': directory,
                     'hash': img_hash,
-                    'thumbnail': thumb_b64_str
+                    'thumbnail': self._image_to_data_url(grid_thumb, quality=85),
+                    'preview': self._image_to_data_url(preview, quality=92)
                 })
         return result
 
@@ -487,7 +500,8 @@ class ImagePathSelectorNode:
         print(f"[ImagePathSelector] RAW support (rawpy):     {'✅ enabled' if _RAWPY_AVAILABLE else '❌ disabled – pip install rawpy'}")
         print(f"[ImagePathSelector] HEIF support (pillow-heif): {'✅ enabled' if _HEIF_AVAILABLE else '❌ disabled – pip install pillow-heif'}")
 
-        thumbnail_size = 64
+        thumbnail_size = 256
+        grid_thumbnail_size = 64
         columns = 8
 
         if not directory_path or not os.path.exists(directory_path):
@@ -496,7 +510,7 @@ class ImagePathSelectorNode:
             empty_ui = {
                 "images": [[]],
                 "selected_index": [0],
-                "thumbnail_size": [64],
+                "thumbnail_size": [grid_thumbnail_size],
                 "columns": [8],
                 "text": [""]
             }
@@ -533,12 +547,12 @@ class ImagePathSelectorNode:
         if not self.image_list:
             print(f"[ImagePathSelector] ⚠️ No valid images found in directory!")
             placeholder = torch.zeros((1, 512, 512, 3))
-            return {"ui": {"images": [[]], "selected_index": [0], "thumbnail_size": [64], "columns": [8], "text": [""]}, "result": (placeholder,)}
+            return {"ui": {"images": [[]], "selected_index": [0], "thumbnail_size": [grid_thumbnail_size], "columns": [8], "text": [""]}, "result": (placeholder,)}
 
         # node_id already computed above
 
         print(f"[ImagePathSelector] Preparing UI data with base64 thumbnails...")
-        image_list = self._get_image_list_for_ui()
+        image_list = self._get_image_list_for_ui(grid_thumbnail_size)
         print(f"[ImagePathSelector] ✅ Created {len(image_list)} thumbnail entries")
 
         if len(image_list) > 0:
@@ -565,7 +579,7 @@ class ImagePathSelectorNode:
             ui_data = {
                 "images": [image_list],
                 "selected_index": [selected_index],
-                "thumbnail_size": [64],
+                "thumbnail_size": [grid_thumbnail_size],
                 "columns": [8],
                 "text": [selected_image],
                 "awaiting_selection": [False]
@@ -591,7 +605,7 @@ class ImagePathSelectorNode:
             ui_data = {
                 "images": [image_list],
                 "selected_index": [-1],
-                "thumbnail_size": [64],
+                "thumbnail_size": [grid_thumbnail_size],
                 "columns": [8],
                 "text": [""],
                 "awaiting_selection": [True],

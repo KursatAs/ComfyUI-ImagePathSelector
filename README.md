@@ -7,6 +7,7 @@ A custom ComfyUI node that lets you visually browse a folder of images and selec
 ## Features
 
 - 🖼️ **Visual thumbnail grid** — displays all images in a chosen directory as a scrollable grid inside the node
+- **Large hover preview** - move the cursor over any thumbnail to show a larger, higher-quality preview, then move away to hide it instantly
 - 🖱️ **Click to select** — click any thumbnail to instantly queue and run the workflow with that image
 - 📁 **Browse Folder button** *(Windows only)* — opens a native folder picker dialog
 - ✅ **Green border highlight** on the currently selected image
@@ -55,7 +56,7 @@ pip install pillow-heif
 1. Add the **Image Path Selector** node to your workflow (`image/selection` category).
 2. Set the **`directory_path`** to the folder containing your images.
 3. Run the workflow — the node will scan the folder and display a thumbnail grid.
-4. **Click a thumbnail** to select it. The workflow will automatically re-queue and pass the selected image downstream.
+4. Hover over a thumbnail to inspect a larger preview, or **click a thumbnail** to select it. The workflow will automatically re-queue and pass the selected image downstream.
 5. The selected image path is shown below the grid. The selected thumbnail is highlighted with a **green border**.
 
 ### Inputs
@@ -80,6 +81,8 @@ pip install pillow-heif
 
 - On **Windows**, use the **📁 Browse Folder...** button to open a native folder picker instead of typing the path manually.
 - Use **right-click → Reload Images** or toggle the **Refresh** checkbox to pick up newly added files without restarting ComfyUI. On refresh, only new/removed files are processed — existing cached thumbnails are reused.
+- Hover previews use a larger cached preview image, while the grid itself stays compact with 64px thumbnails.
+- Because preview images are cached at a larger size, `.ImagePathSelector.db` may be larger than in older versions. Existing caches are rebuilt automatically when needed.
 - The thumbnail cache is automatically invalidated when the directory path changes or the thumbnail size changes.
 - The first load of a folder generates thumbnails and saves them to `.ImagePathSelector.db` inside that folder. Subsequent loads read directly from the cache and are much faster.
 - On **Windows**, `.ImagePathSelector.db` is automatically hidden so it doesn't clutter your folder.
@@ -104,8 +107,13 @@ pip install pillow-heif
 See [LICENSE](LICENSE).
 
 ---
+## Changelog
 
-## Changelog - 1.0.2
+### 1.0.5     (2026-06-12)
+- **Large hover previews** - hovering over a grid thumbnail now shows a larger preview image that updates immediately as the cursor moves between thumbnails.
+- **Higher-quality preview cache** - cached preview images are stored at a larger size so hover previews stay sharp while the grid remains compact.
+- 
+- **Existing thumbnail caches are rebuilt automatically** when the cached preview size changes, so older 64px caches will be upgraded without manually deleting `.ImagePathSelector.db`. if you want to force an immediate upgrade, simply delete the existing `.ImagePathSelector.db` file from the image folder and it will be rebuilt with the new preview size on the next load.
 
 ### 2026-06-01
 - **SQLite thumbnail cache** — thumbnails are now persisted to a `.ImagePathSelector.db` file inside the image folder (hidden on Windows). Subsequent loads read from the database instead of re-generating thumbnails, making folder loads near-instant.

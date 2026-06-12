@@ -46,6 +46,8 @@ const extractUiPayload = (message) => {
     return null;
 };
 
+const HOVER_PREVIEW_SCALE = 4;
+
 console.log("[ImagePathSelector] Extension loading...");
 
 let _isWindows = false;
@@ -82,25 +84,109 @@ app.registerExtension({
                 this._gridCanvas = gridCanvas;
                 this._gridContainer = gridContainer;
                 this._gridWidgetHeight = 80;
+                this._hoveredPreviewIndex = -1;
+                this._hoverPreviewEl = null;
+                this._hoverPreviewImg = null;
 
-                gridCanvas.addEventListener("click", async (e) => {
-                    if (!self.imageListData || self.imageListData.length === 0) return;
+                this._getGridIndexFromEvent = function(e) {
+                    if (!self.imageListData || self.imageListData.length === 0) return -1;
 
                     const rect = gridCanvas.getBoundingClientRect();
-                    const scaleX = gridCanvas.width  / rect.width;
+                    if (!rect.width || !rect.height) return -1;
+
+                    const scaleX = gridCanvas.width / rect.width;
                     const scaleY = gridCanvas.height / rect.height;
                     const relX = (e.clientX - rect.left) * scaleX;
-                    const relY = (e.clientY - rect.top)  * scaleY;
+                    const relY = (e.clientY - rect.top) * scaleY;
 
                     const border = 4;
-                    const cellWidth  = self.thumbnailSize + border * 2;
+                    const cellWidth = self.thumbnailSize + border * 2;
                     const cellHeight = self.thumbnailSize + border * 2;
 
                     const col = Math.floor(relX / cellWidth);
                     const row = Math.floor(relY / cellHeight);
-                    const clickedIndex = row * self.columns + col;
+                    if (col < 0 || row < 0 || col >= self.columns) return -1;
 
-                    if (clickedIndex < 0 || clickedIndex >= self.imageListData.length) return;
+                    const index = row * self.columns + col;
+                    return index >= 0 && index < self.imageListData.length ? index : -1;
+                };
+
+                this._ensureHoverPreview = function() {
+                    if (self._hoverPreviewEl) return self._hoverPreviewEl;
+
+                    const preview = document.createElement("div");
+                    preview.style.cssText =
+                        "position:fixed;display:none;z-index:10000;pointer-events:none;" +
+                        "background:#111;border:1px solid #666;border-radius:4px;padding:6px;" +
+                        "box-shadow:0 8px 24px rgba(0,0,0,0.45);box-sizing:border-box;";
+
+                    const img = document.createElement("img");
+                    img.style.cssText =
+                        "display:block;object-fit:contain;background:#202020;" +
+                        "image-rendering:auto;";
+                    preview.appendChild(img);
+                    document.body.appendChild(preview);
+
+                    self._hoverPreviewEl = preview;
+                    self._hoverPreviewImg = img;
+                    return preview;
+                };
+
+                this._positionHoverPreview = function(clientX, clientY) {
+                    const preview = self._hoverPreviewEl;
+                    if (!preview) return;
+
+                    const margin = 12;
+                    const offset = 18;
+                    const rect = preview.getBoundingClientRect();
+                    let left = clientX + offset;
+                    let top = clientY + offset;
+
+                    if (left + rect.width + margin > window.innerWidth) {
+                        left = clientX - rect.width - offset;
+                    }
+                    if (top + rect.height + margin > window.innerHeight) {
+                        top = clientY - rect.height - offset;
+                    }
+
+                    preview.style.left = Math.max(margin, left) + "px";
+                    preview.style.top = Math.max(margin, top) + "px";
+                };
+
+                this._showHoverPreview = function(index, clientX, clientY) {
+                    const imgData = self.imageListData?.[index];
+                    const previewSrc = imgData?.preview || imgData?.thumbnail;
+                    if (!previewSrc) {
+                        self._hideHoverPreview();
+                        return;
+                    }
+
+                    const preview = self._ensureHoverPreview();
+                    const img = self._hoverPreviewImg;
+                    const previewSize = self.thumbnailSize * HOVER_PREVIEW_SCALE;
+
+                    if (self._hoveredPreviewIndex !== index) {
+                        self._hoveredPreviewIndex = index;
+                        img.src = previewSrc;
+                        img.alt = imgData.filename || "Image preview";
+                        img.style.width = previewSize + "px";
+                        img.style.height = previewSize + "px";
+                    }
+
+                    preview.style.display = "block";
+                    self._positionHoverPreview(clientX, clientY);
+                };
+
+                this._hideHoverPreview = function() {
+                    self._hoveredPreviewIndex = -1;
+                    if (self._hoverPreviewEl) {
+                        self._hoverPreviewEl.style.display = "none";
+                    }
+                };
+
+                gridCanvas.addEventListener("click", async (e) => {
+                    const clickedIndex = self._getGridIndexFromEvent(e);
+                    if (clickedIndex < 0) return;
 
                     self.selectedIndex = clickedIndex;
                     const selectedImage = self.imageListData[clickedIndex];
@@ -123,6 +209,23 @@ app.registerExtension({
 
                     await self.buildThumbnailGrid();
                     app.queuePrompt(0, 1);
+                });
+
+                gridCanvas.addEventListener("mousemove", (e) => {
+                    const hoverIndex = self._getGridIndexFromEvent(e);
+                    if (hoverIndex < 0) {
+                        self._hideHoverPreview();
+                        return;
+                    }
+                    self._showHoverPreview(hoverIndex, e.clientX, e.clientY);
+                });
+
+                gridCanvas.addEventListener("mouseleave", () => {
+                    self._hideHoverPreview();
+                });
+
+                gridContainer.addEventListener("scroll", () => {
+                    self._hideHoverPreview();
                 });
 
                 this.applyPayloadToGrid = async function(payload, sourceLabel = "payload") {
@@ -177,6 +280,7 @@ app.registerExtension({
                     self._gridContainer.style.setProperty("--comfy-widget-height",     "0px");
                     self._gridContainer.style.setProperty("--comfy-widget-min-height", "0px");
                     if (self._domWidget) self._domWidget.computedHeight = 0;
+                    self._hideHoverPreview();
                     self._forceResize();
                 };
 
