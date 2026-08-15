@@ -30,8 +30,11 @@ from comfy_execution.graph import ExecutionBlocker
 
 
 class ImagePathSelectorNode:
+    _CACHE_VERSION = "2"
     _selection_storage = {}
     _directory_hashes = {}  # class-level: keyed by node_id, survives instance recreation
+    _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
+    _PNG_TEXT_CHUNKS = {b'tEXt', b'zTXt', b'iTXt'}
 
     def __init__(self):
         self.image_cache = {}
@@ -80,6 +83,59 @@ class ImagePathSelectorNode:
             hasher.update(f.read(1024))
         return hasher.hexdigest()
 
+    def _open_standard_image(self, image_path):
+        with Image.open(image_path) as img:
+            img = ImageOps.exif_transpose(img)
+            img.load()
+            return img.copy()
+
+    def _png_without_text_chunks(self, image_path):
+        output = _io.BytesIO()
+        stripped = 0
+
+        with open(image_path, 'rb') as src:
+            signature = src.read(8)
+            if signature != self._PNG_SIGNATURE:
+                raise ValueError("Not a PNG file")
+            output.write(signature)
+
+            while True:
+                header = src.read(8)
+                if len(header) != 8:
+                    raise OSError("Truncated PNG chunk header")
+
+                length = int.from_bytes(header[:4], 'big')
+                chunk_type = header[4:8]
+                chunk_data = src.read(length)
+                crc = src.read(4)
+                if len(chunk_data) != length or len(crc) != 4:
+                    raise OSError(f"Truncated PNG chunk {chunk_type!r}")
+
+                if chunk_type in self._PNG_TEXT_CHUNKS:
+                    stripped += 1
+                else:
+                    output.write(header)
+                    output.write(chunk_data)
+                    output.write(crc)
+
+                if chunk_type == b'IEND':
+                    break
+
+        output.seek(0)
+        return output, stripped
+
+    def _open_png_ignoring_text_metadata(self, image_path):
+        stripped_png, stripped_chunks = self._png_without_text_chunks(image_path)
+        with Image.open(stripped_png) as img:
+            img = ImageOps.exif_transpose(img)
+            img.load()
+            result = img.copy()
+        print(
+            f"[ImagePathSelector] INFO Opened PNG after stripping "
+            f"{stripped_chunks} text metadata chunk(s): {os.path.basename(image_path)}"
+        )
+        return result
+
     def _open_image(self, image_path):
         ext = os.path.splitext(image_path.lower())[1]
         raw_extensions = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.raw', '.pef', '.srw'}
@@ -87,7 +143,18 @@ class ImagePathSelectorNode:
             with rawpy.imread(image_path) as raw:
                 rgb = raw.postprocess()
             return Image.fromarray(rgb)
-        return ImageOps.exif_transpose(Image.open(image_path))
+        try:
+            return self._open_standard_image(image_path)
+        except Exception as first_error:
+            if ext == '.png':
+                try:
+                    return self._open_png_ignoring_text_metadata(image_path)
+                except Exception as fallback_error:
+                    print(
+                        f"[ImagePathSelector] WARN PNG metadata fallback failed for "
+                        f"'{os.path.basename(image_path)}': {fallback_error}"
+                    )
+            raise first_error
 
     def _create_thumbnail(self, image_path, size):
         try:
@@ -170,8 +237,13 @@ class ImagePathSelectorNode:
             conn, cur = self._open_db(db_path)
             with conn:
                 stored_size = self._read_meta(cur, 'thumb_size')
+                stored_version = self._read_meta(cur, 'cache_version')
                 if stored_size is None or int(stored_size) != thumb_size:
                     print(f"[ImagePathSelector] ℹ Thumbnail size changed ({stored_size} → {thumb_size}), rebuilding .ImagePathSelector.db")
+                    conn.close()
+                    return None
+                if stored_version != self._CACHE_VERSION:
+                    print(f"[ImagePathSelector] INFO Cache version changed ({stored_version} -> {self._CACHE_VERSION}), rebuilding .ImagePathSelector.db")
                     conn.close()
                     return None
 
@@ -212,8 +284,9 @@ class ImagePathSelectorNode:
             conn, cur = self._open_db(db_path)
 
             stored_size = self._read_meta(cur, 'thumb_size')
-            if stored_size is None or int(stored_size) != thumb_size:
-                print(f"[ImagePathSelector] ℹ Thumbnail size changed — clearing .ImagePathSelector.db")
+            stored_version = self._read_meta(cur, 'cache_version')
+            if stored_size is None or int(stored_size) != thumb_size or stored_version != self._CACHE_VERSION:
+                print(f"[ImagePathSelector] INFO Thumbnail cache format changed - clearing .ImagePathSelector.db")
                 cur.execute("DELETE FROM thumbnails")
                 cur.execute("DELETE FROM meta")
                 conn.commit()
@@ -252,6 +325,7 @@ class ImagePathSelectorNode:
                 print(f"[ImagePathSelector] ✚ Added {added} new thumbnail(s) to .ImagePathSelector.db")
 
             self._write_meta(cur, 'thumb_size', thumb_size)
+            self._write_meta(cur, 'cache_version', self._CACHE_VERSION)
             conn.commit()
 
             rows = cur.execute(
@@ -364,6 +438,7 @@ class ImagePathSelectorNode:
         if db_available and db_conn:
             try:
                 self._write_meta(db_cur, 'thumb_size', thumbnail_size)
+                self._write_meta(db_cur, 'cache_version', self._CACHE_VERSION)
                 db_conn.commit()
                 db_conn.close()
                 print(f"[ImagePathSelector] 💾 Saved {len(image_list)} thumbnails to .ImagePathSelector.db")

@@ -15,6 +15,7 @@ A custom ComfyUI node that lets you visually browse a folder of images and selec
 - 🗂️ **Right-click → Reload Images** context menu option
 - 💾 **Selection persists** across workflow saves and reloads
 - ⚡ **SQLite thumbnail cache** — thumbnails are stored in a `.ImagePathSelector.db` file inside the image folder, making subsequent loads near-instant
+- 🛠️ **PNG metadata fallback** — PNG files with problematic embedded text metadata can still be loaded by stripping metadata during fallback decoding
 
 ---
 
@@ -22,7 +23,7 @@ A custom ComfyUI node that lets you visually browse a folder of images and selec
 
 | Format | Notes |
 |---|---|
-| JPEG, PNG, BMP, GIF, WebP | Always supported |
+| JPEG, PNG, BMP, GIF, WebP | Always supported. PNG files with invalid/problematic text metadata are retried with metadata stripped. |
 | HEIC / HEIF / HIF | Requires `pillow-heif` |
 | CR2, CR3, NEF, ARW, DNG, ORF, RW2, RAF, RAW, PEF, SRW | Requires `rawpy` |
 
@@ -83,7 +84,7 @@ pip install pillow-heif
 - Use **right-click → Reload Images** or toggle the **Refresh** checkbox to pick up newly added files without restarting ComfyUI. On refresh, only new/removed files are processed — existing cached thumbnails are reused.
 - Hover previews use a larger cached preview image, while the grid itself stays compact with 64px thumbnails.
 - Because preview images are cached at a larger size, `.ImagePathSelector.db` may be larger than in older versions. Existing caches are rebuilt automatically when needed.
-- The thumbnail cache is automatically invalidated when the directory path changes or the thumbnail size changes.
+- The thumbnail cache is automatically invalidated when the directory path changes, the thumbnail size changes, or the internal cache format version changes.
 - The first load of a folder generates thumbnails and saves them to `.ImagePathSelector.db` inside that folder. Subsequent loads read directly from the cache and are much faster.
 - On **Windows**, `.ImagePathSelector.db` is automatically hidden so it doesn't clutter your folder.
 - If the database file becomes corrupt it is automatically deleted and rebuilt from scratch.
@@ -109,10 +110,14 @@ See [LICENSE](LICENSE).
 ---
 ## Changelog
 
+### 1.0.7
+- **PNG metadata fallback** - PNG files that fail normal loading because of problematic embedded text metadata are retried after stripping PNG text metadata chunks.
+- **Thumbnail cache versioning** - the `.ImagePathSelector.db` thumbnail cache now stores an internal cache version and is rebuilt automatically when the cache format changes.
+- **Version bump** - package metadata updated to `1.0.7`.
+
 ### 1.0.5     (2026-06-12)
 - **Large hover previews** - hovering over a grid thumbnail now shows a larger preview image that updates immediately as the cursor moves between thumbnails.
 - **Higher-quality preview cache** - cached preview images are stored at a larger size so hover previews stay sharp while the grid remains compact.
-- 
 - **Existing thumbnail caches are rebuilt automatically** when the cached preview size changes, so older 64px caches will be upgraded without manually deleting `.ImagePathSelector.db`. if you want to force an immediate upgrade, simply delete the existing `.ImagePathSelector.db` file from the image folder and it will be rebuilt with the new preview size on the next load.
 
 ### 2026-06-01
